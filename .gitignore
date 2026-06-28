@@ -1,0 +1,30 @@
+# Credenciales y configuración personal — NUNCA subir a GitHub
+.env
+config/settings.yaml
+config/profile.md
+.idea/**
+# Datos generados en runtime
+data/
+
+# Sesiones de Playwright (contienen cookies de autenticación)
+scripts/data/
+**/playwright/*-profile/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# Pytest
+.pytest_cache/
+.coverage
+
+# IDEs
+.vscode/
+.idea/
+
+# Preservar directorios vacíos en git
+!.gitkeep
+
