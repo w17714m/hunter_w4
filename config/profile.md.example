@@ -1,0 +1,45 @@
+# Perfil profesional
+
+<!--
+  Copia este archivo a config/profile.md y reemplaza con tu información real.
+  El archivo profile.md está en .gitignore y NUNCA se sube a GitHub.
+  Este ejemplo usa datos ficticios — no subas datos personales reales.
+-->
+
+## Resumen
+
+Desarrollador backend con X años de experiencia en [tus tecnologías principales].
+Busco roles remotos a término indefinido, salario desde [X] COP mensuales.
+No me interesan roles de QA ni frontend puro.
+
+## Stack principal
+
+- Lenguajes: Python, TypeScript
+- Frameworks: FastAPI, NestJS
+- Cloud: AWS (Lambda, S3, RDS)
+- Bases de datos: PostgreSQL, Redis
+- DevOps: Docker, Kubernetes, GitHub Actions
+
+## Experiencia
+
+**Empresa Ejemplo S.A. · Bogotá · 2022 – presente**
+- Desarrollé APIs REST con FastAPI y Python
+- Implementé pipelines CI/CD con GitHub Actions
+- Lideré migración a arquitectura de microservicios
+
+**Otra Empresa · Medellín · 2019 – 2022**
+- Backend con Node.js y Express
+- Bases de datos PostgreSQL y MongoDB
+
+## Educación
+
+Ingeniería de Sistemas — Universidad Ejemplo · 2014 – 2019
+
+## Lo que busco
+
+- Rol: Backend Developer / Software Engineer
+- Modalidad: 100% remoto
+- Contrato: indefinido
+- Salario: desde X millones COP
+- Stack preferido: Python o TypeScript, cloud AWS/GCP
+- No me interesan: roles QA, frontend puro, outsourcing por horas
