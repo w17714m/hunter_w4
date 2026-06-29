@@ -1,0 +1,81 @@
+# Copia este archivo a config/settings.yaml y ajusta los valores.
+# config/settings.yaml está en .gitignore y NUNCA se sube a GitHub.
+
+busquedas:
+  elempleo:
+    - cargo: "desarrollador backend"
+      modalidad: "remoto"                  # remoto | hibrido | presencial
+      salarios:
+        - "6-8-millones"
+        - "8-10-millones"
+        - "mas-21-millones"
+        - "salario-confidencial"
+      tipos_contrato:
+        - "indefinido"
+      fecha_publicacion: "hoy"             # hoy | semana | mes
+
+  computrabajo:
+    - cargo: "desarrollador backend"
+      lugar_trabajo: "remoto"              # remoto | bogota | medellin | cali | barranquilla
+      tipo_contrato: "indefinido"          # indefinido | fijo | obra-labor | prestacion-servicios
+      salario_minimo: "mas-5-5m"           # mas-3m | mas-4m | mas-4-5m | mas-5-5m | ...
+      fecha_publicacion: "3dias"           # hoy | 3dias | semana | mes
+
+  linkedin:
+    - cargo: "backend developer"
+      geo_id: "100876405"                  # 100876405 = Colombia
+      modalidades:
+        - "remoto"                         # presencial | remoto | hibrido
+      tiempo_publicado: "semana"           # 1h | 4h | 24h | semana | mes
+      tipos_contrato:
+        - "tiempo-completo"                # tiempo-completo | medio-tiempo | contrato | temporal | pasantia
+        - "contrato"
+      easy_apply: false
+      orden: "reciente"                    # reciente | relevancia
+
+skills:
+  lista:
+    - Python
+    - TypeScript
+    - FastAPI
+    - NestJS
+    - PostgreSQL
+    - Docker
+    - AWS
+  umbral_match: 0.30                       # 0.0–1.0 — fracción mínima de skills presentes en la oferta
+
+modelos:
+  ollama_base_url: "http://localhost:11434"
+  embeddings: "nomic-embed-text"
+  juez: "deepseek-r1:14b"
+  extractor_skills: "qwen3:8b"
+
+filtros:
+  max_days: 3                              # ofertas más antiguas que N días se descartan
+  idiomas_permitidos:
+    - "ES"                                 # ES | EN | PT — códigos ISO 639-1
+  umbral_similitud: 0.65                   # 0.0–1.0 — similitud coseno mínima contra el perfil
+  truncar_descripcion_chars: 4000          # máx. caracteres enviados al juez LLM
+
+vectores:
+  path: "data/lancedb"
+  namespace_perfil: "perfil"
+  namespace_ofertas: "ofertas"
+
+notificacion:
+  telegram_habilitado: true                # false = desactiva Telegram (no requiere .env)
+
+salidas:
+  markdown_dir: "data/matches"
+
+browser:
+  headless: true                           # false = muestra el navegador (útil para depurar)
+
+stealth:
+  warp_enabled: false                      # true = requiere Cloudflare WARP instalado
+  warp_cli_path: "warp-cli"               # nombre o ruta absoluta del ejecutable
+  max_ip_rotations: 2                      # 0–50 — intentos de rotación de IP por URL bloqueada
+  delays:
+    page_load: [2.0, 5.0]                  # [min, max] segundos tras cargar página
+    between_requests: [0.5, 2.0]           # [min, max] segundos entre solicitudes
+    typing: [0.05, 0.15]                   # [min, max] segundos entre teclas simuladas
