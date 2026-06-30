@@ -26,7 +26,9 @@ class LLMSkillExtractorError(Exception):
 class LLMSkillExtractor:
     """Extracts technology skills from a job description using an LLM via Ollama.
 
-    Uses qwen3:8b by default with /no_think to skip chain-of-thought and reduce latency.
+    The default model is deepseek-r1:14b; in production the runner overrides this
+    with cfg.modelos.extractor_skills (qwen3:8b). think=False suppresses
+    chain-of-thought on both models to reduce latency.
     On any failure (network, bad JSON, timeout) returns an empty list so the caller
     can fall back to the original regex-based logic.
     """

@@ -50,6 +50,15 @@ class SQLiteOfferRepository:
         conn.execute('ALTER TABLE offers ADD COLUMN skills_oferta_json TEXT')
       except sqlite3.OperationalError:
         pass
+      conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS kv_store (
+          key        TEXT PRIMARY KEY,
+          value      TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        ''',
+      )
 
   def upsert(self, offer: Offer) -> None:
     now = datetime.now(UTC).isoformat()
@@ -158,6 +167,20 @@ class SQLiteOfferRepository:
       )
       if cursor.rowcount == 0:
         raise ValueError(f'No existe oferta con id={offer_id}')
+
+  def kv_get(self, key: str) -> str | None:
+    with self._connect() as conn:
+      row = conn.execute('SELECT value FROM kv_store WHERE key = ?', (key,)).fetchone()
+    return str(row['value']) if row else None
+
+  def kv_set(self, key: str, value: str) -> None:
+    now = datetime.now(UTC).isoformat()
+    with self._connect() as conn:
+      conn.execute(
+        'INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)'
+        ' ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at',
+        (key, value, now),
+      )
 
   def fetch_recent(self, days: int) -> list[Offer]:
     if days < 0:

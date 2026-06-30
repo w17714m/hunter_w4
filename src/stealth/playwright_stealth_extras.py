@@ -68,27 +68,63 @@ async def random_scroll(page: Any) -> None:
         pass  # scroll is best-effort; never block content extraction
 
 
+_EXPAND_SELECTORS = (
+    # data-testid variants (LinkedIn rotates these)
+    '[data-testid="expandable-text-button"]',
+    '[data-testid="show-more-btn"]',
+    '[data-testid="jobs-description-expandable-button"]',
+    # aria-label variants (ES / EN)
+    '[aria-label="ver más"]',
+    '[aria-label="Ver más"]',
+    '[aria-label="show more"]',
+    '[aria-label="Show more"]',
+    '[aria-label="see more"]',
+    # data-control-name (classic DOM)
+    '[data-control-name="show_more"]',
+    '[data-control-name="jobs_description_web_details"]',
+    # Visible text — Playwright :has-text() matches partial content
+    'button:has-text("Ver más")',
+    'button:has-text("ver más")',
+    'button:has-text("Show more")',
+    'button:has-text("show more")',
+    'button:has-text("See more")',
+    'button:has-text("...more")',
+    'button:has-text("…more")',
+    'span:has-text("Ver más")',
+    'span:has-text("Show more")',
+)
+
+
 async def expand_description(page: Any) -> bool:
     """Click the LinkedIn 'show more' button to reveal the full job description.
 
-    The outer <button data-testid="expandable-text-button"> has
-    `pointer-events: none` set inline, so a normal click is rejected by
-    Playwright.  The first child <span> carries `pointer-events: auto` and is
-    the real hit target.  force=True bypasses Playwright's pointer-events
-    check and dispatches the event directly to that span.
+    Tries multiple selectors in order because LinkedIn rotates data-testid and
+    other attributes. For each candidate, first tries clicking the element directly
+    with force=True, then tries its first child <span> (LinkedIn sometimes sets
+    pointer-events:none on the outer button so the span is the real hit target).
+    Returns True on the first successful click, False if nothing matched.
     """
-    try:
-        btn = page.locator('[data-testid="expandable-text-button"]').first
-        if await btn.count() == 0:
-            return False
-        span = btn.locator('span').first
-        if await span.count() == 0:
-            return False
-        await span.click(force=True)
-        await asyncio.sleep(random.uniform(0.5, 1.0))
-        return True
-    except Exception:  # noqa: BLE001
-        return False  # best-effort; never block extraction
+    for selector in _EXPAND_SELECTORS:
+        try:
+            btn = page.locator(selector).first
+            if await btn.count() == 0:
+                continue
+            # Try direct click first
+            try:
+                await btn.click(force=True)
+                await asyncio.sleep(random.uniform(0.4, 0.8))
+                return True
+            except Exception:  # noqa: BLE001
+                pass
+            # Fallback: click the first child span (pointer-events workaround)
+            span = btn.locator('span').first
+            if await span.count() > 0:
+                await span.click(force=True)
+                await asyncio.sleep(random.uniform(0.4, 0.8))
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
 
 
 async def human_mouse_move_to(page: Any, locator: Any) -> None:

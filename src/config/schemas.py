@@ -270,6 +270,7 @@ class ModelosConfig(BaseModel):
   embeddings: str
   juez: str
   extractor_skills: str = 'qwen3:8b'
+  extractor_html: str = 'deepseek-r1:14b'
 
 
 class FiltrosConfig(BaseModel):

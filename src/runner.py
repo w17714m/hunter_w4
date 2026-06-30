@@ -92,6 +92,7 @@ async def _collect_all(
     url_filter: URLSeenFilter | None = None,
     max_per_source: int | None = None,
     linkedin_budget: VisitBudget | None = None,
+    repo: SQLiteOfferRepository | None = None,
 ) -> list[tuple[dict[str, Any], str]]:
     """Launch all three collectors and return a list of (raw_offer, source).
 
@@ -150,6 +151,9 @@ async def _collect_all(
                 url_filter=url_filter,
                 visit_budget=linkedin_budget,
                 base_url=fuentes.linkedin_base_url,
+                ollama_base_url=cfg.modelos.ollama_base_url,
+                extractor_html_model=cfg.modelos.extractor_html,
+                repo=repo,
             ) if max_per_source else LinkedInCollector(
                 headless=headless,
                 warp_rotator=warp,
@@ -157,6 +161,9 @@ async def _collect_all(
                 url_filter=url_filter,
                 visit_budget=linkedin_budget,
                 base_url=fuentes.linkedin_base_url,
+                ollama_base_url=cfg.modelos.ollama_base_url,
+                extractor_html_model=cfg.modelos.extractor_html,
+                repo=repo,
             )
             raw_li = await collector_li.collect(busquedas_li[:1] if max_per_source else busquedas_li)
             raw_pairs.extend((r, 'linkedin') for r in raw_li)
@@ -197,7 +204,7 @@ async def run_once() -> None:
     pipeline = _build_pipeline(cfg, repo=repo)
     linkedin_budget = VisitBudget(limit=150)
 
-    raw_pairs = await _collect_all(cfg, url_filter=url_filter, linkedin_budget=linkedin_budget)
+    raw_pairs = await _collect_all(cfg, url_filter=url_filter, linkedin_budget=linkedin_budget, repo=repo)
     logger.info('Total raw offers received: %d', len(raw_pairs))
 
     counts: dict[str, int] = {}
@@ -217,11 +224,12 @@ async def run_once() -> None:
 async def run_trial() -> None:
     """Trial cycle: 1 offer per source, full cascade with detailed logs, no scheduler."""
     cfg = get_config()
+    repo = SQLiteOfferRepository()
     # trial skips url_filter — allows reprocessing to inspect the full pipeline flow
-    pipeline = _build_pipeline(cfg)
+    pipeline = _build_pipeline(cfg, repo=repo)
 
     logger.info('=== TRIAL MODE — 1 offer per source, full flow ===')
-    raw_pairs = await _collect_all(cfg, max_per_source=1)
+    raw_pairs = await _collect_all(cfg, max_per_source=1, repo=repo)
     logger.info('Total raw offers for trial: %d', len(raw_pairs))
 
     for i, (raw, source) in enumerate(raw_pairs, start=1):

@@ -12,6 +12,7 @@ from playwright.async_api import BrowserContext, Error as PlaywrightError, Timeo
 from playwright_stealth import Stealth
 
 from src.stealth.human_delays import between_requests_delay, page_load_delay
+from src.core.db import SQLiteOfferRepository
 from src.core.url_seen_filter import URLSeenFilter
 from src.core.visit_budget import VisitBudgetProtocol
 from src.stealth.playwright_stealth_extras import expand_description, human_mouse_move_to, random_extra_headers, random_scroll, random_user_agent, random_viewport
@@ -58,6 +59,10 @@ BLOCK_MARKERS = (
   'sign in to linkedin',
   'join linkedin',
 )
+
+# These markers appear in LinkedIn's authenticated footer/header even on valid job pages.
+# When the URL is a /jobs/view/ offer page, they are footer noise — not real blocks.
+_FOOTER_NOISE_MARKERS = frozenset({'sign in to linkedin', 'join linkedin'})
 
 DESCRIPTION_SELECTORS = (
   '[data-testid="expandable-text-box"]',   # LinkedIn nuevo DOM (2025+)
@@ -178,10 +183,13 @@ class LinkedInExtractor:
   def description_html_to_markdown(self, description_html: str) -> str:
     return md(description_html, heading_style='ATX').strip()
 
-  def detect_block_state(self, url: str, body_text: str) -> str | None:
+  def detect_block_state(self, url: str, body_text: str, is_offer_page: bool = False) -> str | None:
     lower_url = url.lower()
     lower_body = body_text.lower()
     for marker in BLOCK_MARKERS:
+      # On authenticated offer pages, footer markers are noise — only block on URL match
+      if is_offer_page and marker in _FOOTER_NOISE_MARKERS and marker not in lower_url:
+        continue
       if marker in lower_url or marker in lower_body:
         if 'captcha' in marker or 'verify' in marker or 'verification' in marker:
           return 'captcha'
@@ -207,6 +215,9 @@ class LinkedInCollector:
     url_filter: URLSeenFilter | None = None,
     visit_budget: VisitBudgetProtocol | None = None,
     base_url: str = _LINKEDIN_BASE_URL_DEFAULT,
+    ollama_base_url: str = 'http://localhost:11434',
+    extractor_html_model: str = 'deepseek-r1:14b',
+    repo: SQLiteOfferRepository | None = None,
   ) -> None:
     self.session_manager = session_manager or LinkedInSessionManager(timeout_ms=timeout_ms, headless=headless)
     self.extractor = extractor or LinkedInExtractor()
@@ -217,6 +228,9 @@ class LinkedInCollector:
     self.url_filter = url_filter
     self.visit_budget = visit_budget
     self.base_url = base_url
+    self.ollama_base_url = ollama_base_url
+    self.extractor_html_model = extractor_html_model
+    self._repo = repo
 
   async def _try_rotate(self) -> bool:
     """Rotate IP via WARP. Returns True on success, False if WARP is unavailable."""
@@ -391,16 +405,22 @@ class LinkedInCollector:
           return self._build_error_result(offer_url, 'blocked', f'HTTP 999 tras {attempt + 1} intentos'), page
 
         body_text = await page.locator('body').inner_text(timeout=5_000)
-        state = self.extractor.detect_block_state(page.url, body_text)
+        is_offer_page = '/jobs/view/' in page.url
+        logger.info('[LinkedIn] Página cargada (intento %d) | url_final=%s | is_offer_page=%s | body_len=%d', attempt + 1, page.url, is_offer_page, len(body_text))
+        state = self.extractor.detect_block_state(page.url, body_text, is_offer_page=is_offer_page)
         if state:
+          # Log first 300 chars of body to confirm what LinkedIn is actually serving
           logger.warning('[LinkedIn] Bloqueo %s en oferta (intento %d): %s', state, attempt + 1, offer_url)
+          logger.debug('[LinkedIn] Body snippet (300 chars): %s', body_text[:300].replace('\n', ' '))
           if attempt < self.max_ip_rotations:
             page = await self._rotate_and_reopen(playwright, context_holder, offer_url, attempt)
             continue
           return self._build_error_result(offer_url, state, f'Block {state} after {attempt + 1} attempts'), page
 
+        logger.info('[LinkedIn] Sin bloqueo detectado — iniciando extracción de descripción')
         await random_scroll(page)
         description_html, extraction_status = await self._extract_description_html(page)
+        logger.info('[LinkedIn] _extract_description_html completó | status=%s | html_len=%d', extraction_status, len(description_html))
         if not description_html:
           return self._build_error_result(offer_url, 'empty_description', 'Description block not found'), page
 
@@ -528,24 +548,125 @@ class LinkedInCollector:
       return False
 
   async def _extract_description_html(self, page: Any) -> tuple[str, str]:
+    logger.info('[LinkedIn][extract] Paso 1: wait_for_selector "%s" (timeout 15s)', DESCRIPTION_SELECTORS[0])
     try:
       await page.wait_for_selector(DESCRIPTION_SELECTORS[0], timeout=15_000)
+      logger.info('[LinkedIn][extract] Paso 1: selector primario encontrado en DOM')
     except (PlaywrightTimeoutError, PlaywrightError):
-      pass
+      logger.info('[LinkedIn][extract] Paso 1: selector primario NO encontrado en 15s — continuando')
 
-    # Expand truncated description before extracting HTML
-    await expand_description(page)
+    logger.info('[LinkedIn][extract] Paso 2: expand_description() — buscando botón "ver más"')
+    expanded = await expand_description(page)
+    logger.info('[LinkedIn][extract] Paso 2: expand_description() retornó %s', expanded)
 
+    logger.info('[LinkedIn][extract] Paso 3: iterando %d selectores hardcodeados', len(DESCRIPTION_SELECTORS))
     for selector in DESCRIPTION_SELECTORS:
       try:
         locator = page.locator(selector).first
-        if await locator.count() == 0:
+        count = await locator.count()
+        logger.debug('[LinkedIn][extract] Selector "%s" → count=%d', selector, count)
+        if count == 0:
           continue
         html = await locator.inner_html(timeout=8_000)
         if html.strip():
+          logger.info('[LinkedIn][extract] Paso 3: éxito con selector "%s" (html_len=%d)', selector, len(html))
           return html, 'ok'
+        logger.debug('[LinkedIn][extract] Selector "%s" encontrado pero HTML vacío', selector)
       except (PlaywrightTimeoutError, PlaywrightError):
+        logger.debug('[LinkedIn][extract] Selector "%s" → timeout/error Playwright', selector)
         continue
+    logger.warning('[LinkedIn][extract] Paso 3: ningún selector hardcodeado produjo HTML')
+
+    # --- Selector guardado en SQLite (descubierto por el razonador en una sesión previa) ---
+    saved_selector: str | None = None
+    if self._repo is not None:
+      saved_selector = self._repo.kv_get('linkedin_expand_selector')
+      logger.info('[LinkedIn][extract] Paso 4: selector en DB → %s', saved_selector or 'ninguno')
+    else:
+      logger.info('[LinkedIn][extract] Paso 4: repo no configurado, sin selector en DB')
+
+    if saved_selector:
+      logger.info('[LinkedIn][extract] Paso 4: intentando click en selector guardado: %s', saved_selector)
+      try:
+        btn = page.locator(saved_selector).first
+        btn_count = await btn.count()
+        logger.info('[LinkedIn][extract] Paso 4: selector guardado count=%d', btn_count)
+        if btn_count > 0:
+          await btn.click(force=True)
+          await asyncio.sleep(0.8)
+          for sel in DESCRIPTION_SELECTORS:
+            try:
+              loc = page.locator(sel).first
+              if await loc.count() == 0:
+                continue
+              html = await loc.inner_html(timeout=8_000)
+              if html.strip():
+                logger.info('[LinkedIn][extract] Paso 4: selector guardado funcionó: %s', saved_selector)
+                return html, 'ok'
+            except (PlaywrightTimeoutError, PlaywrightError):
+              continue
+          logger.warning('[LinkedIn][extract] Paso 4: click en selector guardado OK pero HTML sigue vacío')
+        else:
+          logger.warning('[LinkedIn][extract] Paso 4: selector guardado no existe en DOM: %s', saved_selector)
+      except Exception as exc:  # noqa: BLE001
+        logger.warning('[LinkedIn][extract] Paso 4: excepción con selector guardado: %s', exc)
+
+    # --- LLM fallback: el razonador analiza el HTML completo para descubrir el selector ---
+    logger.info('[LinkedIn][extract] Paso 5: CONSULTANDO LLM (%s) — obteniendo page.content()', self.extractor_html_model)
+    try:
+      from src.stealth.html_description_extractor import HTMLDescriptionExtractor
+      page_html = await page.content()
+      logger.info('[LinkedIn][extract] Paso 5: page.content() obtenido (len=%d) — enviando al LLM', len(page_html))
+      llm_extractor = HTMLDescriptionExtractor(
+        base_url=self.ollama_base_url,
+        model=self.extractor_html_model,
+      )
+      # httpx.post es síncrono — ejecutar en thread para no bloquear el event loop de Playwright
+      result = await asyncio.to_thread(llm_extractor.extract, page_html)
+      logger.info('[LinkedIn][extract] Paso 5: LLM respondió | description_text_len=%d | expand_selector="%s"', len(result.get('description_text', '')), result.get('expand_selector', ''))
+
+      if result.get('description_text'):
+        logger.info('[LinkedIn][extract] Paso 5: LLM extrajo descripción directamente (len=%d)', len(result['description_text']))
+        if result.get('expand_selector') and self._repo is not None:
+          self._repo.kv_set('linkedin_expand_selector', result['expand_selector'])
+          logger.info('[LinkedIn][extract] Paso 5: selector guardado en DB: %s', result['expand_selector'])
+        return result['description_text'], 'ok_llm'
+
+      if result.get('expand_selector'):
+        selector = result['expand_selector']
+        logger.info('[LinkedIn][extract] Paso 5: LLM devolvió selector de expansión: %s', selector)
+        try:
+          btn = page.locator(selector).first
+          btn_count = await btn.count()
+          logger.info('[LinkedIn][extract] Paso 5: selector LLM count=%d', btn_count)
+          if btn_count > 0:
+            await btn.click(force=True)
+            await asyncio.sleep(0.8)
+            for sel in DESCRIPTION_SELECTORS:
+              try:
+                loc = page.locator(sel).first
+                if await loc.count() == 0:
+                  continue
+                html = await loc.inner_html(timeout=8_000)
+                if html.strip():
+                  logger.info('[LinkedIn][extract] Paso 5: click LLM exitoso con selector "%s" (html_len=%d)', sel, len(html))
+                  if self._repo is not None:
+                    self._repo.kv_set('linkedin_expand_selector', selector)
+                    logger.info('[LinkedIn][extract] Paso 5: selector guardado en DB: %s', selector)
+                  return html, 'ok_llm'
+              except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+            logger.warning('[LinkedIn][extract] Paso 5: click LLM OK pero HTML sigue vacío tras re-iteración')
+          else:
+            logger.warning('[LinkedIn][extract] Paso 5: selector LLM no encontrado en DOM: %s', selector)
+        except Exception as exc:  # noqa: BLE001
+          logger.warning('[LinkedIn][extract] Paso 5: excepción al usar selector LLM: %s', exc)
+      else:
+        logger.warning('[LinkedIn][extract] Paso 5: LLM no devolvió ni descripción ni selector — ambos vacíos')
+    except Exception as exc:  # noqa: BLE001
+      logger.warning('[LinkedIn][extract] Paso 5: LLM HTML extraction falló: %s', exc)
+
+    logger.warning('[LinkedIn][extract] FALLO TOTAL — todos los pasos fallaron, retornando empty_description')
     return '', 'empty_description'
 
   @staticmethod
