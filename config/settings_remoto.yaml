@@ -1,0 +1,214 @@
+busquedas:
+  elempleo:
+    - cargo: "java"
+      modalidad: "remoto"
+      salarios:
+        - "55-6-millones"
+        - "6-8-millones"
+        - "8-10-millones"
+        - "10-125-millones"
+        - "125-15-millones"
+        - "15-175-millones"
+        - "175-21-millones"
+        - "mas-21-millones"
+        - "salario-confidencial"
+      tipos_contrato:
+        - "indefinido"
+      fecha_publicacion: "hoy"
+    - cargo: "node"
+      modalidad: "remoto"
+      salarios:
+        - "55-6-millones"
+        - "6-8-millones"
+        - "8-10-millones"
+        - "10-125-millones"
+        - "125-15-millones"
+        - "15-175-millones"
+        - "175-21-millones"
+        - "mas-21-millones"
+        - "salario-confidencial"
+      tipos_contrato:
+        - "indefinido"
+      fecha_publicacion: "hoy"
+    - cargo: "full stack"
+      modalidad: "remoto"
+      salarios:
+        - "55-6-millones"
+        - "6-8-millones"
+        - "8-10-millones"
+        - "10-125-millones"
+        - "125-15-millones"
+        - "15-175-millones"
+        - "175-21-millones"
+        - "mas-21-millones"
+        - "salario-confidencial"
+      tipos_contrato:
+        - "indefinido"
+      fecha_publicacion: "hoy"
+
+  computrabajo:
+    - cargo: "java"
+      lugar_trabajo: "remoto"
+      tipo_contrato: "indefinido"
+      salario_minimo: "mas-5-5m"
+      fecha_publicacion: "3dias"
+    - cargo: "node"
+      lugar_trabajo: "remoto"
+      tipo_contrato: "indefinido"
+      salario_minimo: "mas-5-5m"
+      fecha_publicacion: "3dias"
+    - cargo: "fullstack full stack"
+      lugar_trabajo: "remoto"
+      tipo_contrato: "indefinido"
+      salario_minimo: "mas-5-5m"
+      fecha_publicacion: "3dias"
+
+  linkedin:
+    - cargo: "backend"
+      geo_id: "100876405"
+      modalidades:
+        - "remoto"
+      tiempo_publicado: "24h"
+      tipos_contrato:
+        - "tiempo-completo"
+        - "contrato"
+      easy_apply: false
+      orden: "reciente"
+    - cargo: "java"
+      geo_id: "100876405"
+      modalidades:
+        - "remoto"
+      tiempo_publicado: "24h"
+      tipos_contrato:
+        - "tiempo-completo"
+        - "contrato"
+      easy_apply: false
+      orden: "reciente"
+    - cargo: "node"
+      geo_id: "100876405"
+      modalidades:
+        - "remoto"
+      tiempo_publicado: "24h"
+      tipos_contrato:
+        - "tiempo-completo"
+        - "contrato"
+      easy_apply: false
+      orden: "reciente"
+    - cargo: "python"
+      geo_id: "100876405"
+      modalidades:
+        - "remoto"
+      tiempo_publicado: "24h"
+      tipos_contrato:
+        - "tiempo-completo"
+        - "contrato"
+      easy_apply: false
+      orden: "reciente"
+    - cargo: "desarrollador de software IA"
+      geo_id: "100876405"
+      modalidades:
+        - "remoto"
+      tiempo_publicado: "24h"
+      tipos_contrato:
+        - "tiempo-completo"
+        - "contrato"
+      easy_apply: false
+      orden: "reciente"
+    - cargo: "full stack"
+      geo_id: "100876405"
+      modalidades:
+        - "remoto"
+      tiempo_publicado: "24h"
+      tipos_contrato:
+        - "tiempo-completo"
+        - "contrato"
+      easy_apply: false
+      orden: "reciente"
+    - cargo: "IA Machine learning"
+      geo_id: "100876405"
+      modalidades:
+        - "remoto"
+      tiempo_publicado: "24h"
+      tipos_contrato:
+        - "tiempo-completo"
+        - "contrato"
+      easy_apply: false
+      orden: "reciente"
+
+skills:
+  lista:
+    # Backend principal
+    - Java
+    - "C#"
+    - .NET
+    - Python
+    - TypeScript
+    - Go
+    # Frameworks backend
+    - "ASP.NET"
+    - "Spring Boot"
+    - NestJS
+    - FastAPI
+    - Quarkus
+    # Cloud
+    - AWS
+    - Azure
+    - GCP
+    # Infraestructura y DevOps
+    - Docker
+    - Kubernetes
+    - Terraform
+    - "GitHub Actions"
+    # Bases de datos
+    - SQL
+    - PostgreSQL
+    - "SQL Server"
+    - DynamoDB
+    - MongoDB
+    # Frontend (presencia relevante)
+    - React
+    - Angular
+    # Arquitectura / patrones
+    - microservicios
+    - "arquitectura hexagonal"
+    # IA / ML
+    - PyTorch
+    - "machine learning"
+  umbral_match: 0.30   # 30% of the offer's skills must be covered by the user's YAML stack
+
+modelos:
+  ollama_base_url: "http://localhost:11434"
+  embeddings: "nomic-embed-text"
+  juez: "deepseek-r1:14b"
+  extractor_skills: "qwen3:8b"
+  extractor_html: "deepseek-r1:14b"
+
+filtros:
+  max_days: 2
+  idiomas_permitidos:
+    - "ES"
+  umbral_similitud: 0.65
+  truncar_descripcion_chars: 4000
+
+vectores:
+  path: "data/lancedb"
+  namespace_perfil: "perfil"
+  namespace_ofertas: "ofertas"
+
+notificacion:
+  telegram_habilitado: true
+
+salidas:
+  markdown_dir: "data/matches"
+
+browser:
+  headless: false   # false para ver el navegador durante el scraping
+
+stealth:
+  warp_enabled: true
+  warp_cli_path: "warp-cli"   # warp-cli is on PATH; set to absolute path if needed
+  max_ip_rotations: 20
+  delays:
+    page_load: [2.0, 5.0]
+    between_requests: [0.5, 2.0]
+    typing: [0.05, 0.15]

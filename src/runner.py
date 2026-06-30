@@ -153,6 +153,7 @@ async def _collect_all(
                 base_url=fuentes.linkedin_base_url,
                 ollama_base_url=cfg.modelos.ollama_base_url,
                 extractor_html_model=cfg.modelos.extractor_html,
+                extractor_company_model=cfg.modelos.extractor_company,
                 repo=repo,
             ) if max_per_source else LinkedInCollector(
                 headless=headless,
@@ -163,6 +164,7 @@ async def _collect_all(
                 base_url=fuentes.linkedin_base_url,
                 ollama_base_url=cfg.modelos.ollama_base_url,
                 extractor_html_model=cfg.modelos.extractor_html,
+                extractor_company_model=cfg.modelos.extractor_company,
                 repo=repo,
             )
             raw_li = await collector_li.collect(busquedas_li[:1] if max_per_source else busquedas_li)

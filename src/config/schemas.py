@@ -271,6 +271,7 @@ class ModelosConfig(BaseModel):
   juez: str
   extractor_skills: str = 'qwen3:8b'
   extractor_html: str = 'deepseek-r1:14b'
+  extractor_company: str = 'qwen3:8b'
 
 
 class FiltrosConfig(BaseModel):

@@ -217,6 +217,7 @@ class LinkedInCollector:
     base_url: str = _LINKEDIN_BASE_URL_DEFAULT,
     ollama_base_url: str = 'http://localhost:11434',
     extractor_html_model: str = 'deepseek-r1:14b',
+    extractor_company_model: str = 'qwen3:8b',
     repo: SQLiteOfferRepository | None = None,
   ) -> None:
     self.session_manager = session_manager or LinkedInSessionManager(timeout_ms=timeout_ms, headless=headless)
@@ -230,6 +231,7 @@ class LinkedInCollector:
     self.base_url = base_url
     self.ollama_base_url = ollama_base_url
     self.extractor_html_model = extractor_html_model
+    self.extractor_company_model = extractor_company_model
     self._repo = repo
 
   async def _try_rotate(self) -> bool:
@@ -337,11 +339,17 @@ class LinkedInCollector:
 
         # No block: extract new offers (filter integrated in pagination)
         new_urls_needed = self.visit_budget.remaining() if self.visit_budget is not None else self.max_offers_per_search
-        offer_links = await self._paginate_and_collect(page, new_urls_needed, url_filter=self.url_filter)
-        logger.info('[LinkedIn] %d URLs nuevas para visitar desde: %s', len(offer_links), search_url)
+        offer_pairs = await self._paginate_and_collect(page, new_urls_needed, url_filter=self.url_filter)
+        logger.info('[LinkedIn] %d URLs nuevas para visitar desde: %s', len(offer_pairs), search_url)
 
         results: list[dict[str, Any]] = []
-        for offer_url in offer_links:
+        for offer_url, empresa_card in offer_pairs:
+          # Check blacklist before visiting the offer detail page
+          if empresa_card and self._repo is not None and self._repo.is_blacklisted(empresa_card):
+            logger.info('[LinkedIn] Empresa en lista negra, omitiendo oferta: empresa=%s url=%s', empresa_card, offer_url)
+            results.append(self._build_error_result(offer_url, 'blacklisted', f'Empresa en lista negra: {empresa_card}'))
+            continue
+
           if self.visit_budget is not None and not self.visit_budget.consume():
             logger.warning(
               '[LinkedIn] Visit budget exhausted (%d/%d). Stopping scraping.',
@@ -350,6 +358,10 @@ class LinkedInCollector:
             )
             break
           result, page = await self._fetch_offer_with_retry(playwright, context_holder, page, offer_url)
+
+          # Update empresa in SQLite if the card had a name and the result didn't resolve it
+          if empresa_card and self._repo is not None and result.get('empresa') is None:
+            result['empresa'] = empresa_card
           results.append(result)
         return results, page
 
@@ -393,6 +405,7 @@ class LinkedInCollector:
     offer_url: str,
   ) -> tuple[dict[str, Any], Any]:
     """Extract a single offer with retries and context reopening on blocks."""
+    prev_body_len: int | None = None  # detect persistent block by identical body size
     for attempt in range(self.max_ip_rotations + 1):
       try:
         response = await page.goto(offer_url, wait_until='domcontentloaded')
@@ -409,9 +422,38 @@ class LinkedInCollector:
         logger.info('[LinkedIn] Página cargada (intento %d) | url_final=%s | is_offer_page=%s | body_len=%d', attempt + 1, page.url, is_offer_page, len(body_text))
         state = self.extractor.detect_block_state(page.url, body_text, is_offer_page=is_offer_page)
         if state:
-          # Log first 300 chars of body to confirm what LinkedIn is actually serving
           logger.warning('[LinkedIn] Bloqueo %s en oferta (intento %d): %s', state, attempt + 1, offer_url)
           logger.debug('[LinkedIn] Body snippet (300 chars): %s', body_text[:300].replace('\n', ' '))
+
+          # Heuristic block detection can false-positive (e.g. a new layout that
+          # happens to contain a BLOCK_MARKERS string, or partially-rendered content).
+          # Before burning an IP rotation, ask the reasoning LLM to verify whether
+          # real job content is actually present on this page.
+          verified = await self._verify_block_with_llm(page, offer_url, attempt)
+          if verified is not None:
+            description_html, extraction_status = verified
+            descripcion_md = self.extractor.description_html_to_markdown(description_html)
+            if descripcion_md:
+              titulo = await self._extract_text(page, ['h1', '.jobs-unified-top-card__job-title', '.top-card-layout__title'])
+              empresa = await self._extract_text(page, ['.jobs-unified-top-card__company-name a', '.topcard__org-name-link', '.top-card-layout__card a'])
+              ubicacion = await self._extract_text(page, ['.jobs-unified-top-card__bullet', '.topcard__flavor--bullet'])
+              return {
+                'url': normalize_linkedin_url(offer_url),
+                'titulo': titulo or 'No title',
+                'empresa': empresa,
+                'ubicacion': ubicacion,
+                'descripcion_md': descripcion_md,
+                'fuente': 'linkedin',
+                'scraped_at': datetime.now(UTC).isoformat(),
+                'extraction_status': extraction_status,
+              }, page
+
+          # If body size is identical across attempts, this offer is individually rate-limited
+          # by LinkedIn and IP rotation will not help — abandon immediately.
+          if prev_body_len is not None and len(body_text) == prev_body_len:
+            logger.warning('[LinkedIn] Body idéntico en intentos consecutivos (len=%d) — bloqueo por job ID, abandonando sin más rotaciones: %s', prev_body_len, offer_url)
+            return self._build_error_result(offer_url, state, f'Bloqueo persistente por job ID tras {attempt + 1} intentos'), page
+          prev_body_len = len(body_text)
           if attempt < self.max_ip_rotations:
             page = await self._rotate_and_reopen(playwright, context_holder, offer_url, attempt)
             continue
@@ -459,37 +501,59 @@ class LinkedInCollector:
     page: Any,
     new_urls_needed: int,
     url_filter: URLSeenFilter | None = None,
-  ) -> list[str]:
+  ) -> list[tuple[str, str]]:
     """Paginate LinkedIn until new_urls_needed unseen URLs are found.
 
+    Returns list of (url, empresa) tuples. empresa may be empty string if not found.
+    Company names are extracted by LLM from card HTML — no hardcoded CSS selectors.
     The filter is applied page by page so the stop condition is "enough new URLs",
-    not "enough total URLs". This allows pagination to continue when most offers
-    have already been processed.
+    not "enough total URLs".
     """
-    new_links: list[str] = []
+    from src.stealth.company_extractor import CompanyExtractor
+    company_extractor = CompanyExtractor(
+      base_url=self.ollama_base_url,
+      model=self.extractor_company_model,
+    )
+
+    new_links: list[tuple[str, str]] = []
     seen_local: set[str] = set()
 
     for page_num in range(MAX_PAGES):
-      page_ids = await self._wait_and_extract_ids(page)
-      page_urls: list[str] = []
-      for job_id in page_ids:
-        url = f'{self.base_url}/jobs/view/{job_id}'
+      page_cards = await self._wait_and_extract_ids(page)
+      page_items: list[tuple[str, str, str]] = []  # (url, empresa, card_html)
+      for card in page_cards:
+        url = f'{self.base_url}/jobs/view/{card["id"]}'
         if url not in seen_local:
           seen_local.add(url)
-          page_urls.append(url)
+          page_items.append((url, '', card.get('card_html', '')))
 
-      if url_filter and page_urls:
+      if url_filter and page_items:
+        page_urls = [u for u, _, _ in page_items]
         already_seen = url_filter.bulk_seen('linkedin', page_urls)
-        new_on_page = [u for u in page_urls if u not in already_seen]
+        new_on_page = [(u, e, h) for u, e, h in page_items if u not in already_seen]
         if already_seen:
           logger.info(
             '[LinkedIn] Page %d: %d/%d URLs already processed',
-            page_num + 1, len(already_seen), len(page_urls),
+            page_num + 1, len(already_seen), len(page_items),
           )
       else:
-        new_on_page = page_urls
+        new_on_page = page_items
 
-      new_links.extend(new_on_page)
+      # Extract company names in parallel via LLM for new cards only
+      if new_on_page:
+        logger.info('[LinkedIn] Extrayendo empresa de %d cards via LLM (paralelo)', len(new_on_page))
+        empresa_results: list[str] = list(await asyncio.gather(*[
+          asyncio.to_thread(company_extractor.extract, card_html)
+          for _, _, card_html in new_on_page
+        ]))
+        new_links.extend(
+          (url, empresa)
+          for (url, _, _), empresa in zip(new_on_page, empresa_results)
+        )
+        for (url, _, _), empresa in zip(new_on_page, empresa_results):
+          if empresa:
+            logger.info('[LinkedIn] Card empresa extraída por LLM: "%s" → %s', empresa, url)
+
       logger.info('[LinkedIn] Page %d: %d new accumulated of %d target', page_num + 1, len(new_links), new_urls_needed)
 
       if len(new_links) >= new_urls_needed:
@@ -504,9 +568,12 @@ class LinkedInCollector:
     logger.info('[LinkedIn] Pagination complete: %d new URLs found', len(new_links))
     return new_links[:new_urls_needed]
 
-  async def _wait_and_extract_ids(self, page: Any) -> list[str]:
-    """Wait for <li[data-occludable-job-id]> elements to stabilize and return their IDs.
+  async def _wait_and_extract_ids(self, page: Any) -> list[dict[str, str]]:
+    """Wait for <li[data-occludable-job-id]> elements to stabilize and return cards.
 
+    Each card is a dict with 'id' (job ID) and 'card_html' (outerHTML of the <li>).
+    The caller uses card_html to extract the company name via LLM without relying
+    on hardcoded CSS selectors that LinkedIn rotates.
     PlaywrightTimeoutError is intentionally allowed to propagate so _collect_search
     can trigger the retry mechanism with context reopening.
     """
@@ -526,7 +593,11 @@ class LinkedInCollector:
     return await page.evaluate("""
       () => {
         const items = document.querySelectorAll('li[data-occludable-job-id]');
-        return [...items].map(li => li.getAttribute('data-occludable-job-id')).filter(Boolean);
+        return [...items].map(li => {
+          const id = li.getAttribute('data-occludable-job-id') || '';
+          if (!id) return null;
+          return {id, card_html: li.outerHTML};
+        }).filter(Boolean);
       }
     """)
 
@@ -546,6 +617,64 @@ class LinkedInCollector:
       return True
     except (PlaywrightTimeoutError, PlaywrightError):
       return False
+
+  async def _verify_block_with_llm(self, page: Any, offer_url: str, attempt: int) -> tuple[str, str] | None:
+    """Ask the reasoning LLM to double-check a heuristic block before rotating IP.
+
+    detect_block_state() is a plain string-match heuristic and can false-positive
+    (new layout containing a BLOCK_MARKERS substring, partially-rendered content,
+    etc). Returns (description_html, extraction_status) if the LLM finds real job
+    content despite the block heuristic firing, or None if it confirms there is
+    nothing extractable — in which case the caller proceeds with IP rotation as before.
+    """
+    logger.info('[LinkedIn][verify] Bloqueo detectado (intento %d) — verificando con LLM antes de rotar IP: %s', attempt + 1, offer_url)
+    try:
+      from src.stealth.html_description_extractor import HTMLDescriptionExtractor
+      page_html = await page.content()
+      llm_extractor = HTMLDescriptionExtractor(
+        base_url=self.ollama_base_url,
+        model=self.extractor_html_model,
+      )
+      result = await asyncio.to_thread(llm_extractor.extract, page_html)
+      logger.info(
+        '[LinkedIn][verify] LLM respondió | description_text_len=%d | expand_selector="%s"',
+        len(result.get('description_text', '')), result.get('expand_selector', ''),
+      )
+
+      if result.get('description_text'):
+        logger.info('[LinkedIn][verify] Falso positivo confirmado — LLM encontró descripción real pese al bloqueo heurístico')
+        if result.get('expand_selector') and self._repo is not None:
+          self._repo.kv_set('linkedin_expand_selector', result['expand_selector'])
+        return result['description_text'], 'ok_llm'
+
+      if result.get('expand_selector'):
+        selector = result['expand_selector']
+        try:
+          btn = page.locator(selector).first
+          if await btn.count() > 0:
+            await btn.click(force=True)
+            await asyncio.sleep(0.8)
+            for sel in DESCRIPTION_SELECTORS:
+              try:
+                loc = page.locator(sel).first
+                if await loc.count() == 0:
+                  continue
+                html = await loc.inner_html(timeout=8_000)
+                if html.strip():
+                  logger.info('[LinkedIn][verify] Falso positivo confirmado — click LLM-guiado exitoso pese al bloqueo heurístico')
+                  if self._repo is not None:
+                    self._repo.kv_set('linkedin_expand_selector', selector)
+                  return html, 'ok_llm'
+              except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+        except Exception as exc:  # noqa: BLE001
+          logger.debug('[LinkedIn][verify] Excepción al usar selector LLM en página bloqueada: %s', exc)
+
+      logger.info('[LinkedIn][verify] LLM confirma que no hay contenido extraíble — bloqueo real, procediendo a rotar IP')
+      return None
+    except Exception as exc:  # noqa: BLE001
+      logger.warning('[LinkedIn][verify] Verificación LLM falló silenciosamente: %s', exc)
+      return None
 
   async def _extract_description_html(self, page: Any) -> tuple[str, str]:
     logger.info('[LinkedIn][extract] Paso 1: wait_for_selector "%s" (timeout 15s)', DESCRIPTION_SELECTORS[0])

@@ -59,6 +59,15 @@ class SQLiteOfferRepository:
         )
         ''',
       )
+      conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS company_blacklist (
+          empresa    TEXT PRIMARY KEY,
+          reason     TEXT,
+          added_at   TEXT NOT NULL
+        )
+        ''',
+      )
 
   def upsert(self, offer: Offer) -> None:
     now = datetime.now(UTC).isoformat()
@@ -180,6 +189,30 @@ class SQLiteOfferRepository:
         'INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)'
         ' ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at',
         (key, value, now),
+      )
+
+  def is_blacklisted(self, empresa: str) -> bool:
+    with self._connect() as conn:
+      row = conn.execute(
+        'SELECT 1 FROM company_blacklist WHERE empresa = ? LIMIT 1', (empresa,)
+      ).fetchone()
+    return row is not None
+
+  def add_to_blacklist(self, empresa: str, reason: str = '') -> None:
+    now = datetime.now(UTC).isoformat()
+    with self._connect() as conn:
+      conn.execute(
+        'INSERT INTO company_blacklist (empresa, reason, added_at) VALUES (?, ?, ?)'
+        ' ON CONFLICT(empresa) DO UPDATE SET reason=excluded.reason, added_at=excluded.added_at',
+        (empresa, reason, now),
+      )
+
+  def update_empresa(self, offer_id: str, empresa: str) -> None:
+    now = datetime.now(UTC).isoformat()
+    with self._connect() as conn:
+      conn.execute(
+        'UPDATE offers SET empresa = ?, updated_at = ? WHERE id = ? AND (empresa IS NULL OR empresa = "")',
+        (empresa, now, offer_id),
       )
 
   def fetch_recent(self, days: int) -> list[Offer]:

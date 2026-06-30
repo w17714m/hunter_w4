@@ -118,3 +118,62 @@ def test_has_any_multiple_existing_ids(tmp_path) -> None:
   assert offer_b.id in result
   assert 'no-existe' not in result
 
+
+# ---------------------------------------------------------------------------
+# company_blacklist
+# ---------------------------------------------------------------------------
+
+def test_blacklist_add_and_check(tmp_path) -> None:
+  repo = SQLiteOfferRepository(str(tmp_path / 'jobs.db'))
+  repo.add_to_blacklist('CV Harvesters S.A.', reason='Vende datos de candidatos')
+  assert repo.is_blacklisted('CV Harvesters S.A.') is True
+  assert repo.is_blacklisted('Empresa Legítima') is False
+
+
+def test_blacklist_upsert_updates_reason(tmp_path) -> None:
+  repo = SQLiteOfferRepository(str(tmp_path / 'jobs.db'))
+  repo.add_to_blacklist('Spamco', reason='Razón inicial')
+  repo.add_to_blacklist('Spamco', reason='Razón actualizada')
+  # Must not raise and must return still blacklisted
+  assert repo.is_blacklisted('Spamco') is True
+
+
+def test_blacklist_empty_reason_allowed(tmp_path) -> None:
+  repo = SQLiteOfferRepository(str(tmp_path / 'jobs.db'))
+  repo.add_to_blacklist('NoReasonCorp')
+  assert repo.is_blacklisted('NoReasonCorp') is True
+
+
+def test_blacklist_case_sensitive(tmp_path) -> None:
+  repo = SQLiteOfferRepository(str(tmp_path / 'jobs.db'))
+  repo.add_to_blacklist('acme')
+  # SQLite TEXT PRIMARY KEY is case-sensitive by default
+  assert repo.is_blacklisted('ACME') is False
+
+
+# ---------------------------------------------------------------------------
+# update_empresa
+# ---------------------------------------------------------------------------
+
+def test_update_empresa_fills_null(tmp_path) -> None:
+  repo = SQLiteOfferRepository(str(tmp_path / 'jobs.db'))
+  offer = build_offer('offer-null-empresa').model_copy(update={'empresa': None})
+  repo.upsert(offer)
+
+  repo.update_empresa('offer-null-empresa', 'Empresa Detectada')
+
+  recent = repo.fetch_recent(days=1)
+  assert recent[0].empresa == 'Empresa Detectada'
+
+
+def test_update_empresa_does_not_overwrite_existing(tmp_path) -> None:
+  repo = SQLiteOfferRepository(str(tmp_path / 'jobs.db'))
+  offer = build_offer('offer-has-empresa')  # empresa='ACME' from build_offer
+  repo.upsert(offer)
+
+  repo.update_empresa('offer-has-empresa', 'Empresa Nueva')
+
+  recent = repo.fetch_recent(days=1)
+  # empresa was 'ACME', not NULL — must not be overwritten
+  assert recent[0].empresa == 'ACME'
+
